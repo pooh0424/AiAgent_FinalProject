@@ -1,5 +1,6 @@
 """Mock Anthropic client，驗證 tool_use 多輪迴圈。"""
 from dataclasses import dataclass
+from typing import Any
 
 from agent.orchestrator import run_agent
 from storage.db import ensure_user
@@ -38,6 +39,7 @@ def test_tool_use_loop_add_expense():
     ensure_user("u1")
     client = FakeClient(
         [
+            # 第 1 輪：Claude 要求呼叫 add_expense
             FakeResponse(
                 content=[
                     FakeBlock(
@@ -54,6 +56,7 @@ def test_tool_use_loop_add_expense():
                 ],
                 stop_reason="tool_use",
             ),
+            # 第 2 輪：Claude 看到 tool_result 後回最終文字
             FakeResponse(
                 content=[FakeBlock(type="text", text="OK，已記下餐飲・校門口的麵 NT$120")],
                 stop_reason="end_turn",
@@ -66,8 +69,11 @@ def test_tool_use_loop_add_expense():
     assert "已記下" in reply.text
     assert reply.image_url is None
     assert reply.quick_reply_actions is None
+
+    # Claude 被呼叫兩次
     assert len(client.calls) == 2
 
+    # 第二次呼叫時 messages 多了 assistant 的 tool_use 與 user 的 tool_result
     second_messages = client.calls[1]["messages"]
     assert any(
         isinstance(m["content"], list) and any(b.get("type") == "tool_use" for b in m["content"])
@@ -82,6 +88,7 @@ def test_tool_use_loop_add_expense():
 
 def test_delete_two_step_triggers_quick_reply():
     ensure_user("u1")
+    # 先有一筆紀錄
     from tools.expenses import add_expense
 
     r = add_expense(
@@ -89,6 +96,7 @@ def test_delete_two_step_triggers_quick_reply():
     )
     eid = r["expense_id"]
 
+    # 模擬 Claude 用 reference="last" 但 confirmed=False
     client = FakeClient(
         [
             FakeResponse(
@@ -111,6 +119,7 @@ def test_delete_two_step_triggers_quick_reply():
         ]
     )
 
+    # 注入一筆 interaction 以便 find_last_added_expense_id 找得到
     from storage.db import db, now_utc_iso
     import json as _json
 

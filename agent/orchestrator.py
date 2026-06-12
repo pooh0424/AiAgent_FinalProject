@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Any
 
+from anthropic import Anthropic
+
 from agent.prompts import build_system_prompt
 from agent.tool_registry import TOOL_DEFS, dispatch
 from line_interface.reply import AgentReply
@@ -13,16 +15,15 @@ log = logging.getLogger("orchestrator")
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
 MAX_ITER = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
+MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4096"))
 HISTORY_WINDOW = int(os.getenv("HISTORY_WINDOW", "6"))
 
-_client: Any | None = None
+_client: Anthropic | None = None
 
 
-def _get_client() -> Any:
+def _get_client() -> Anthropic:
     global _client
     if _client is None:
-        from anthropic import Anthropic
-
         _client = Anthropic()
     return _client
 
@@ -83,7 +84,7 @@ def _block_to_dict(block: Any) -> dict:
     return {}
 
 
-def run_agent(client: Any | None = None, *, user_id: str, user_text: str) -> AgentReply:
+def run_agent(client: Anthropic | None = None, *, user_id: str, user_text: str) -> AgentReply:
     """Agent 主迴圈：tool_use → dispatch → tool_result → 直到 end_turn。
 
     client 參數可選，方便測試注入 mock。
@@ -108,7 +109,7 @@ def run_agent(client: Any | None = None, *, user_id: str, user_text: str) -> Age
                 system=system_prompt,
                 tools=TOOL_DEFS,
                 messages=messages,
-                max_tokens=1024,
+                max_tokens=MAX_TOKENS,
             )
         except Exception as e:
             log.exception("Claude API 呼叫失敗")
@@ -129,6 +130,7 @@ def run_agent(client: Any | None = None, *, user_id: str, user_text: str) -> Age
                 tool_call_log.append(
                     {"name": block.name, "input": dict(block.input or {}), "result": result}
                 )
+                # 觀察特殊回傳：圖片 / 刪除預覽
                 if block.name == "generate_pie_chart" and result.get("ok"):
                     image_url = result.get("image_url") or image_url
                 if block.name == "delete_expense" and result.get("reason") == "preview_only":
@@ -144,6 +146,7 @@ def run_agent(client: Any | None = None, *, user_id: str, user_text: str) -> Age
             messages.append({"role": "user", "content": tool_results})
             continue
 
+        # end_turn / max_tokens / stop_sequence / pause_turn 都當作結束
         final_text = _extract_text(resp.content)
         break
     else:
